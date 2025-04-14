@@ -24,7 +24,7 @@ class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'BMS Futuristic Dashboard',
+      title: 'BMS Dashboard',
       theme: ThemeData(
         primarySwatch: Colors.blue,
         scaffoldBackgroundColor: const Color(0xFF0A0A0A),
@@ -212,6 +212,9 @@ class _CyberMainScreenState extends State<CyberMainScreen>
   List<TemperatureData> _tempData = [];
   final String _weatherApiKey = '55134d3529aa4758a79162032250904';
   late AnimationController _pulseController;
+  bool _locationPermissionDenied = false;
+  bool _weatherLoading = false;
+  String _weatherError = '';
 
   @override
   void initState() {
@@ -265,8 +268,49 @@ class _CyberMainScreenState extends State<CyberMainScreen>
   }
 
   Future<void> _getWeatherData() async {
+    setState(() {
+      _weatherLoading = true;
+      _weatherError = '';
+    });
+
     try {
-      final position = await geo.Geolocator.getCurrentPosition();
+      bool serviceEnabled = await geo.Geolocator.isLocationServiceEnabled();
+      if (!serviceEnabled) {
+        setState(() {
+          _weatherError = 'Location services are disabled';
+          _locationPermissionDenied = true;
+          _weatherLoading = false;
+        });
+        return;
+      }
+
+      geo.LocationPermission permission =
+          await geo.Geolocator.checkPermission();
+      if (permission == geo.LocationPermission.denied) {
+        permission = await geo.Geolocator.requestPermission();
+        if (permission == geo.LocationPermission.denied) {
+          setState(() {
+            _weatherError = 'Location permissions are denied';
+            _locationPermissionDenied = true;
+            _weatherLoading = false;
+          });
+          return;
+        }
+      }
+
+      if (permission == geo.LocationPermission.deniedForever) {
+        setState(() {
+          _weatherError = 'Location permissions are permanently denied';
+          _locationPermissionDenied = true;
+          _weatherLoading = false;
+        });
+        return;
+      }
+
+      final position = await geo.Geolocator.getCurrentPosition(
+        desiredAccuracy: geo.LocationAccuracy.low,
+      );
+
       final response = await http.get(
         Uri.parse(
           'https://api.weatherapi.com/v1/current.json?key=$_weatherApiKey&q=${position.latitude},${position.longitude}',
@@ -279,14 +323,27 @@ class _CyberMainScreenState extends State<CyberMainScreen>
           _weatherTemp = data['current']['temp_c'];
           _weatherCondition = data['current']['condition']['text'];
           _location = data['location']['name'].toString().toUpperCase();
+          _locationPermissionDenied = false;
+          _weatherError = '';
 
           for (var item in _tempData) {
             item.weatherTemp = _weatherTemp;
           }
         });
+      } else {
+        setState(() {
+          _weatherError =
+              'Failed to load weather data (${response.statusCode})';
+        });
       }
     } catch (e) {
-      print('Weather error: $e');
+      setState(() {
+        _weatherError = 'Failed to get weather: ${e.toString()}';
+      });
+    } finally {
+      setState(() {
+        _weatherLoading = false;
+      });
     }
   }
 
@@ -313,6 +370,10 @@ class _CyberMainScreenState extends State<CyberMainScreen>
   }
 
   Widget _buildWeatherIcon() {
+    if (_weatherCondition.isEmpty) {
+      return const Icon(Icons.cloud_off, size: 60, color: Colors.blueGrey);
+    }
+
     final iconUrl = _weatherCondition.toLowerCase().contains('rain')
         ? 'https://cdn.weatherapi.com/weather/64x64/day/176.png'
         : 'https://cdn.weatherapi.com/weather/64x64/day/113.png';
@@ -325,7 +386,7 @@ class _CyberMainScreenState extends State<CyberMainScreen>
     return Scaffold(
       backgroundColor: const Color(0xFF0A0A0A),
       appBar: AppBar(
-        title: const Text('BMS FUTURISTIC DASHBOARD'),
+        title: const Text('BMS DASHBOARD'),
         centerTitle: true,
         backgroundColor: Colors.black,
         elevation: 0,
@@ -347,7 +408,11 @@ class _CyberMainScreenState extends State<CyberMainScreen>
       ),
       body: TabBarView(
         controller: _tabController,
-        children: [_buildLiveDataTab(), _buildComparisonTab(), const HistoryScreen()],
+        children: [
+          _buildLiveDataTab(),
+          _buildComparisonTab(),
+          const HistoryScreen(),
+        ],
       ),
     );
   }
@@ -470,62 +535,110 @@ class _CyberMainScreenState extends State<CyberMainScreen>
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text(
-              'ENVIRONMENT MONITOR',
-              style: TextStyle(
-                fontSize: 18,
-                fontWeight: FontWeight.bold,
-                color: Color(0xFF00E0FF),
-                letterSpacing: 1.5,
-              ),
-            ),
-            const SizedBox(height: 16),
             Row(
               children: [
-                _buildWeatherIcon(),
-                const SizedBox(width: 16),
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      _location,
-                      style: const TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.w500,
-                        color: Colors.white,
-                      ),
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      _weatherCondition.toUpperCase(),
-                      style: TextStyle(
-                        fontSize: 14,
-                        color: Colors.blueGrey,
-                        letterSpacing: 1.2,
-                      ),
-                    ),
-                  ],
+                const Text(
+                  'ENVIRONMENT MONITOR',
+                  style: TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
+                    color: Color(0xFF00E0FF),
+                    letterSpacing: 1.5,
+                  ),
                 ),
                 const Spacer(),
-                AnimatedBuilder(
-                  animation: _pulseController,
-                  builder: (context, child) {
-                    return Text(
-                      _weatherTemp != null
-                          ? '${_weatherTemp!.toStringAsFixed(1)}°C'
-                          : '--.-°C',
-                      style: TextStyle(
-                        fontSize: 28,
-                        fontWeight: FontWeight.bold,
-                        color: const Color(0xFF00E0FF).withOpacity(
-                          0.7 + _pulseController.value * 0.3,
-                        ),
-                      ),
-                    );
-                  },
+                IconButton(
+                  icon: const Icon(Icons.refresh, color: Colors.blueGrey),
+                  onPressed: _weatherLoading ? null : _getWeatherData,
+                  tooltip: 'Refresh weather',
                 ),
               ],
             ),
+            const SizedBox(height: 16),
+            if (_weatherLoading)
+              const Center(
+                child: Padding(
+                  padding: EdgeInsets.all(16.0),
+                  child: CircularProgressIndicator(
+                    color: Color(0xFF00E0FF),
+                  ),
+                ),
+              )
+            else if (_weatherError.isNotEmpty)
+              Center(
+                child: Padding(
+                  padding: const EdgeInsets.all(16.0),
+                  child: Column(
+                    children: [
+                      const Icon(Icons.error_outline,
+                          color: Colors.red, size: 40),
+                      const SizedBox(height: 10),
+                      Text(
+                        _weatherError,
+                        style: const TextStyle(color: Colors.red),
+                        textAlign: TextAlign.center,
+                      ),
+                      if (_locationPermissionDenied)
+                        TextButton(
+                          onPressed: () async {
+                            await geo.Geolocator.openAppSettings();
+                          },
+                          child: const Text(
+                            'Open Settings',
+                            style: TextStyle(color: Color(0xFF00E0FF)),
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+              )
+            else
+              Row(
+                children: [
+                  _buildWeatherIcon(),
+                  const SizedBox(width: 16),
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        _location,
+                        style: const TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w500,
+                          color: Colors.white,
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        _weatherCondition.toUpperCase(),
+                        style: TextStyle(
+                          fontSize: 14,
+                          color: Colors.blueGrey,
+                          letterSpacing: 1.2,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const Spacer(),
+                  AnimatedBuilder(
+                    animation: _pulseController,
+                    builder: (context, child) {
+                      return Text(
+                        _weatherTemp != null
+                            ? '${_weatherTemp!.toStringAsFixed(1)}°C'
+                            : '--.-°C',
+                        style: TextStyle(
+                          fontSize: 28,
+                          fontWeight: FontWeight.bold,
+                          color: const Color(0xFF00E0FF).withOpacity(
+                            0.7 + _pulseController.value * 0.3,
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                ],
+              ),
           ],
         ),
       ),
